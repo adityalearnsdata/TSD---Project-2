@@ -1,252 +1,496 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#   "httpx",
 #   "pandas",
 #   "matplotlib",
-#   "seaborn",
+#   "tabulate",
 #   "openai",
+#   "requests",
+#   "seaborn",
 #   "scikit-learn",
-#   "pillow",
-#   "ipykernel",
-#   "requests",  # Add requests as an inline dependency
+#   "numpy"
 # ]
 # ///
 
-import os
 import sys
-import subprocess
+import os
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.impute import SimpleImputer
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+import subprocess
 import openai
+import requests
+import re
+import seaborn as sns
 import base64
-try:
-    import requests  # Try importing requests
-except ImportError:
-    # If requests is not found, install it inline
-    print("requests module not found. Installing...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
-    import requests  # Try importing again after installation
-from PIL import Image
+import json
+from sklearn.preprocessing import LabelEncoder
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 
-# Set matplotlib backend to avoid GUI-related errors
-plt.switch_backend('Agg')
+#Assign value to API_KEY
+API_KEY=os.environ["AIPROXY_TOKEN"]
+#Extract filename from stdin
+filename=sys.argv[1]
 
-# Retrieve the AIPROXY_TOKEN from the environment variable
-try:
-    AIPROXY_TOKEN = os.environ["AIPROXY_TOKEN"]
-except KeyError:
-    print("Error: AIPROXY_TOKEN environment variable is not set.")
-    sys.exit(1)
+# Load the CSV file
+def load_data(name):
+    ldata = pd.read_csv(name,encoding_errors="replace")
+    return ldata
 
-openai.api_key = AIPROXY_TOKEN
-openai.api_base = "https://aiproxy.sanand.workers.dev/openai/v1"
+data=load_data(filename)
 
-# Maximum section and total prompt length (in characters)
-MAX_SECTION_LENGTH = 1000  # Max length for each section
-MAX_TOTAL_LENGTH = 4000  # Max length for the entire prompt
+# Descriptive Statistics of the data
+analysis_results = []
+charts = []
+summary = data.describe(include="all").to_markdown()
+categorical_columns_with_bool = data.select_dtypes(include=['object', 'category', 'bool']).columns
+numerical_columns = data.select_dtypes(include=['number']).columns
 
-def truncate_text(text, max_length):
-    """Truncate text to fit within the maximum length."""
-    if len(text) > max_length:
-        return text[:max_length] + "..."  # Add ellipsis to indicate truncation
-    return text
+# Drop rows with any null values
+df_dropped_rows = data.dropna()
+null_rows=len(df_dropped_rows)
 
-def load_data(file_path):
-    """Loads the dataset and handles encoding issues."""
-    print("Loading dataset...")
-    try:
-        df = pd.read_csv(file_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        df = pd.read_csv(file_path, encoding="ISO-8859-1")
-    print("Dataset loaded successfully!")
-    return df
+#data with only numerical columns
+num_data=data.drop(categorical_columns_with_bool,axis=1)
 
-def preprocess_data(df):
-    """Preprocesses the data by handling missing values."""
-    print("Preprocessing data...")
-    imputer = SimpleImputer(strategy="mean")
-    df_imputed = pd.DataFrame(imputer.fit_transform(df.select_dtypes(include=["float64", "int64"])),
-                              columns=df.select_dtypes(include=["float64", "int64"]).columns)
-    df.update(df_imputed)
-    print("Preprocessing complete.")
-    return df
+# Correlation map of numerical columns
+correlation_matrix_data=num_data.corr()
 
-def plot_correlation_matrix(df, output_file="correlation_matrix.png"):
-    """Plots and saves the correlation matrix."""
-    print("Plotting correlation matrix...")
-    numeric_df = df.select_dtypes(include=["float64", "int64"])
-    if numeric_df.empty:
-        print("No numeric data available for correlation matrix.")
-        return None
-    corr = numeric_df.corr()
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, cmap="coolwarm", fmt=".2f", square=True)
-    plt.title("Correlation Matrix")
-    plt.tight_layout()
-    plt.savefig(output_file)
-    plt.close()
-    print(f"Correlation matrix saved as {output_file}.")
-    return corr.to_dict()
+#Call AI to generate a correlation heatmap
+def heatmap_code(statistics):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Write python code to generate a correlation heatmap with appropriate colouring and labels with
+                     correlation matrix named 'correlation_data matrix.
+                     I also need you to save the plotted figure locally in current directory.
+                     Do not use plt.show'''},
+                    {"role": "user", "content": statistics}
+                ]
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-def perform_pca(df, output_file="pca_variance.png"):
-    """Performs PCA and saves explained variance plot."""
-    print("Performing PCA...")
-    numeric_df = df.select_dtypes(include=["float64", "int64"])
-    if numeric_df.empty:
-        print("No numeric data available for PCA.")
-        return None, None
+#correaltion Analysis using ai
+def correl_analysis(correl_mat):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Provide a correlation analysis based on the following correlation matrix in an engaging story manner.'''},
+                    {"role": "user", "content": correl_mat}
+                ],
+                # "functions":function_descriptions # specify the function call
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(numeric_df)
+#Identifying a target variable
+def identify_target(first_row):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Can you identify a probable target variable from this dataset say Yes followed by the target variable name or No.'''},
+                    {"role": "user", "content": first_row}
+                ],
+                # "functions":function_descriptions # specify the function call
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
+def make_target_resp(exists,target_variable):
+    if exists == "Yes" and target_variable != "" and target_variable is not None:
+        final_target=f'The identified target variable from the dataset is {target_variable}'
+    else:
+        final_target='No target variable identified.'
+    return final_target
+
+def create_target_response(statement):
+    function_descriptions = [
+    {
+        "name": "make_target_resp",
+        "description": "Make a Final Target Response",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "exists": {
+                    "type": "string",
+                    "description": "Has a target been identified eg: Yes or No",
+                },
+                "target_variable": {
+                    "type": "string",
+                    "description": "name of target variable eg: average_values or null",
+                },
+            },
+            "required": ["exists","target_variable"],
+        },
+    }
+]
+
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Identify the response and variable name'''},
+                    {"role": "user", "content": statement}
+                ],
+                "functions":function_descriptions ,
+                "function_call":"auto"# specify the function call
+            }
+        )
+    datar=response.json()
+    message = datar['choices'][0]['message']
+    target=""
+    if 'function_call' in message:
+        function_call=message['function_call']
+        arguments = json.loads(function_call['arguments'])  # Parse the arguments as JSON
+        resp_targ=make_target_resp(arguments['exists'],arguments['target_variable'])
+        target=arguments['target_variable']
+        # print(arguments)
+    else:
+        datar=None
+        resp_targ=make_target_resp("No","")
+    return resp_targ,datar,target
+
+#Generate Feature importance output
+def give_feature_importances(data,target):
+    categorical_columns = data.select_dtypes(include=['object']).columns
+    for col in categorical_columns:
+        le = LabelEncoder()
+        data[col] = le.fit_transform(data[col])
     pca = PCA()
-    pca.fit(scaled_data)
-    explained_variance = pca.explained_variance_ratio_
-    pca_components = pca.components_
+    pca.fit(data)
+    loadings = pca.components_
+    feature_importance = pd.Series(np.abs(loadings).sum(axis=0), index=data.columns)
+    ranked_features = feature_importance.sort_values(ascending=False)
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": f'''U have been given the feature importance of a dataset with
+                     {target} as the protagonist describe the feature importances in a story format with emphasis on ranks.
+                     Make it sound like a middle parahgraph of the story.'''},
+                    {"role": "user", "content": ranked_features.to_json()}
+                ]
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-    # Save the explained variance plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(range(1, len(explained_variance) + 1), explained_variance, marker='o', linestyle='--', color='b')
-    plt.title("PCA Explained Variance")
-    plt.xlabel("Principal Component")
-    plt.ylabel("Variance Explained")
-    plt.tight_layout()
-    plt.savefig(output_file)
-    plt.close()
-    print(f"PCA explained variance plot saved as {output_file}.")
+#AI call for Data description
+first_row_of_data=data.iloc[0].to_json()
+def describe_data(first_row):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''There is first row of a dataset given.
+                        try describing what each clumn entails in an engaging engaging manner like an introduction to a story
+                      without talking much about the values of the first row.'''},
+                    {"role": "user", "content": first_row}
+                ]
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-    return explained_variance.tolist(), pca_components
+# redudant features / elimination - openai function calling
+def is_it_redundant(first_row):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Identify any redundant columns in the provided first row of the dataset.
+                     Respond with a Yes followed by column names to be dropped in a python list else repond with a No followed by an empty list'''},
+                    {"role": "user", "content": first_row}
+                ],
+                # "functions":function_descriptions # specify the function call
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-def perform_analysis(df):
-    """Performs various analysis and generates plots."""
-    print("Performing analysis...")
-    results = {}
+def drop_red_cols(resp,drop_it):
+# Split the matched strings by comma to get column names
+    column_names = []
+    if resp=='Yes':
+        matches = re.findall(r"'(.*?)'", drop_it)
+# Split the matched strings by comma to get column names
+        column_names = [name.strip() for name in matches]
+        redun_resp=f'There are some redundant columns in our dataset which we eliminate more specifically : {drop_it}'
+    else:
+        redun_resp="The dataset is a well defined one with no redundant columns."
+    return redun_resp,column_names
 
-    # Outlier Detection
-    results["outliers"] = df.describe().to_dict()
+def create_red_explain(statement):    
+    function_descriptions = [
+    {
+        "name": "drop_red_cols",
+        "description": "Drop Redundant columns",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "resp": {
+                    "type": "string",
+                    "description": "if data has redundant columns or not eg: Yes or No",
+                },
+                "drop_it": {
+                    "type": "string",
+                    "description": "The columns to be dropped eg:['date','id','time_id'] or []",
+                },
+            },
+            "required": ["resp", "drop_it"],
+        },
+    }
+]
 
-    # Correlation Analysis
-    results["correlation"] = plot_correlation_matrix(df)
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Identify the yes or no response and python list'''},
+                    {"role": "user", "content": statement}
+                ],
+                "functions":function_descriptions ,
+                "function_call":"auto"# specify the function call
+            }
+        )
+    datar=response.json()
+    message = datar['choices'][0]['message']
+    if 'function_call' in message:
+        function_call=message['function_call']
+        arguments = json.loads(function_call['arguments'])  # Parse the arguments as JSON
+        resp_redun,drop_l=drop_red_cols(arguments['resp'],arguments['drop_it'])
+    # print(arguments)
+    else:
+        datar=None
+        resp_redun,drop_l=drop_red_cols("No",[])
+    return resp_redun,datar,drop_l
 
-    # PCA Analysis
-    explained_variance, pca_components = perform_pca(df)
+#drop redundant columns
+def drop_cols(datan,drop):
+    if drop==[]:
+        return datan
+    else:
+        datan=datan.drop(drop,axis=1)
+        return datan
 
-    results["pca_explained_variance"] = explained_variance
-    results["pca_components"] = pca_components.tolist()  # Converting to list for easier readability
+#AI call for basic summary based on decsriptive statistics
+def basic_desc(statistics):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "Give me a summary of my data based on the provided statistics. Make your responses sound engaging and like a continuation of a story."},
+                    {"role": "user", "content": statistics}
+                ]
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-    # Value Counts Analysis (do not plot, but include in the prompt)
-    categorical_cols = df.select_dtypes(include=["object"]).columns
-    value_counts = {}
-    for col in categorical_cols:
-        value_counts[col] = df[col].value_counts().to_dict()
+#AI call for visualising analysis done
+def further_analysis(statistics):
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Visualise given decsriptive statistics using python approriately identifying numerical and categorical varianbles.
+                     I have all the required libraries installed with matplotlib.pyplot as plt and seaborn as sns.
+                     I also need you to save the plotted figures locally in current directory .Avoid making boxplots and heatmaps.
+                     Do not plot the figures that will be difficult to interpret.
+                     Properly label and colourize all plots.Do not use plt.show.
+                     Only plot upto 10 most important charts.
+                     My python dataframe is called 'data' so cater the code for it.'''},
+                    {"role": "user", "content": statistics}
+                ]
+            }
+        )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
 
-    print("Analysis complete.")
-    return results, value_counts
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar
 
-def generate_prompt(data_analysis, value_counts):
-    """Generates the prompt for the LLM."""
-    print("Generating prompt for LLM...")
+#Extract python code from gpt reponse
+def extract_python_code(json_data):
+    # Traverse the JSON to find the 'content' key
+    content = json_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    
+    # Use regex to extract Python code blocks from the content
+    code_blocks = re.findall(r"```python(.*?)```", content, re.DOTALL)
+    
+    # Combine all code blocks if multiple exist
+    extracted_code = "\n\n".join(code_blocks).strip()
+    
+    return extracted_code
 
-    dataset_summary = truncate_text(str(data_analysis.get("outliers", "Dataset summary not available.")), MAX_SECTION_LENGTH)
-    correlation_analysis = truncate_text(str(data_analysis.get("correlation", "Correlation analysis not available.")), MAX_SECTION_LENGTH)
-    value_counts_analysis = truncate_text(str(value_counts), MAX_SECTION_LENGTH)  # Directly pass the value counts
-    clustering_insights = truncate_text(str(data_analysis.get("clusters", "No clustering performed.")), MAX_SECTION_LENGTH)
-
-    # Create the prompt with truncated sections
-    prompt = f"""
-    Analyze the following data and provide insights:
-
-    Dataset Summary:
-    {dataset_summary}
-
-    Correlation Analysis:
-    {correlation_analysis}
-
-    Value Counts Analysis:
-    {value_counts_analysis}
-
-    Clustering Insights:
-    {clustering_insights}
-
-    Implications:
-    Please explain the findings and their implications.
+#Execute extracted code from gpt response
+def execute_extracted_code(code):
     """
-
-    # Ensure total length does not exceed the limit
-    prompt = truncate_text(prompt, MAX_TOTAL_LENGTH)
-
-    print("Prompt generation complete.")
-    return prompt
-
-def query_llm(prompt):
-    """Queries the LLM for narrative generation using AI Proxy."""
-    print("Querying the LLM...")
-    API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {AIPROXY_TOKEN}"
-    }
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "You are a data analyst assistant."},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
+    Execute Python code provided as a string.
+    
+    Args:
+        code (str): Python code to execute.
+    """
     try:
-        response = requests.post(API_URL, headers=headers, json=payload)
-        response.raise_for_status()  # Raises an HTTPError if the status code is 4xx/5xx
-        data = response.json()
-        narrative = data["choices"][0]["message"]["content"]
-        print("Narrative generated successfully.")
-        return narrative
-    except requests.exceptions.RequestException as e:
-        print(f"Error with LLM request: {e}")
-        return "LLM request failed. Narrative generation was unsuccessful."
+        exec(code)
+    except Exception as e:
+        print(f"Error during code execution: {e}")
 
-def save_readme(narrative, image_files):
-    """Saves the narrative to README.md along with images, limiting to 3 images."""
-    print("Saving README.md...")
-    readme_content = f"{narrative}\n\n### Visualizations:\n\n"
-    image_count = 0
+def image_process(image_url):
+    # Function to encode the image
+    def encode_image(image_path):
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
 
-    # Only save the first two images to README.md (max 2 images)
-    for image in image_files:
-        if os.path.exists(image) and image_count < 3:
-            encoded_image = base64.b64encode(open(image, "rb").read()).decode("utf-8")
-            readme_content += f"![{image.split('.')[0]}](data:image/png;base64,{encoded_image})\n\n"
-            image_count += 1
+    # Getting the base64 string
+    base64_image = encode_image(image_url)
+    response = requests.post(
+            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": '''Analyse the image provided for data insights in an engaging way like parts of a story
+                     .Also talk about real life implications from our analysis in and engaging manner.'''},
+                    { "role":"user","content": [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}","detail": "low"}}]}
+                    ]
+                    }
+                    )
+    datar=response.json()
+    choices_content = [choice['message']['content'] for choice in datar.get('choices', [])]
+    sresp=""
+    # Print the extracted content
+    for index, content in enumerate(choices_content):
+        sresp+=(f"\n{content}\n")
+    return sresp,datar,image_url
 
-    with open("README.md", "w") as f:
-        f.write(readme_content)
-    print("README.md saved successfully.")
+#Run analysis functions on dataset
 
-def main(file_path):
-    """Main function to orchestrate analysis."""
-    df = load_data(file_path)
-    df = preprocess_data(df)
-    data_analysis, value_counts = perform_analysis(df)
+first_row_response,token_4=describe_data(first_row_of_data)
+redundant_response,token_5=is_it_redundant(first_row_of_data)   
+# print(redundant_response)
+is_it,lists,drop_list=create_red_explain(redundant_response)
+data=drop_cols(data,drop_list)
+data=data.dropna()
+this_is_target,token_6=identify_target(first_row_of_data)
+target_response,token_7,target_column=create_target_response(this_is_target)
+correl_response,token_8=correl_analysis(correlation_matrix_data.to_json())
+feature_imp,token_9=give_feature_importances(data,target_column)
+summary=data.describe(include="all").to_markdown()
+summary_response,token_1=basic_desc(summary)
+analyse_response,token_2=further_analysis(summary)
+code_1=extract_python_code(token_2)
+execute_extracted_code(code_1)
+heatmap_mat_code,token_3=heatmap_code(correlation_matrix_data.to_json())
+code_2=extract_python_code(token_3)
+execute_extracted_code(code_2)
 
-    # Define image files
-    image_files = [
-        "correlation_matrix.png",
-        "pca_variance.png"
-    ]
+# GET IMAGE PATH 
+current_directory = "./" 
 
-    # Generate the prompt with all images and value counts
-    prompt = generate_prompt(data_analysis, value_counts)
-    narrative = query_llm(prompt)
+# List to store URLs of PNG files
+png_urls = []
 
-    # Save README with up to 3 images
-    save_readme(narrative, image_files)
+# Loop through all files in the current directory
+for filename in os.listdir(current_directory):
+    if filename.endswith(".png"):
+        file_path = os.path.join(current_directory, filename)
+        # Construct the URL for each PNG file
+        url = os.path.relpath(file_path, "./").replace("\\", "/")
+        png_urls.append(url)
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Please provide a CSV file as an argument.")
-        sys.exit(1)
-    main(sys.argv[1])
+image_text,image_tokens,order_titles=[],[],[]
+for url in png_urls:
+    image_resp,img_token,title=image_process(url)
+    image_text.append(image_resp)
+    image_tokens.append(img_token)
+    order_titles.append(title)
+
+
+with open("README.md", "w") as f:
+    f.write("## An introduction to the data ##\n\n")
+    f.write(str(first_row_response))
+    f.write("\n\n## Are there any unwanted columns in our data set? - Redundant columns in our dataset ##\n\n")
+    f.write(str(is_it))
+    f.write("\n\n## Summary of the dataset - Understanding Descriptive Statistics ##\n")
+    f.write(str(summary_response))
+    f.write("\n\n## Do we have a protagonist in out story? - Identifying the target variable ##\n\n")
+    f.write(str(target_response))
+    f.write("\n\n## How important are our columns - Feature importance Analysis based on PCA ##\n\n")
+    f.write(str(feature_imp))
+    f.write("\n## How are our columns related to each other? - Correlation Analysis ##\n")
+    f.write(str(correl_response))
+    f.write("\n\n## What do the charts entail about our columns? - Using vision capabilities to analyse them ##\n\n")
+    for i in range(len(image_text)):
+        f.write(f'## {order_titles[i]} ##\n')
+        f.write(str(image_text[i])+'\n\n')
+
+print("Analysis complete. See README.md for details.")
+
